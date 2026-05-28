@@ -9,13 +9,13 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 final class SmpCodec {
-    static final int SMP_PAYLOAD_SIZE = 384;
+    static final int DEFAULT_SMP_PAYLOAD_SIZE = 384;
     static final int SMP_GROUP_IMAGE = 1;
     static final int SMP_ID_IMAGE_UPLOAD = 1;
     static final int SMP_OP_WRITE = 2;
     static final int SMP_OP_WRITE_RSP = 3;
-    static final int SMP_WINDOW_SIZE = 10;
-    static final int SMP_RETRY_COUNT = 3;
+    static final int DEFAULT_SMP_WINDOW_SIZE = 10;
+    static final int DEFAULT_SMP_RETRY_COUNT = 3;
 
     private SmpCodec() {
     }

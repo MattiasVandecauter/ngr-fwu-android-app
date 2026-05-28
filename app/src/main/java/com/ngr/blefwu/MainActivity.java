@@ -7,10 +7,11 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.InputType;
 import android.text.method.ScrollingMovementMethod;
 import android.view.Gravity;
-import android.view.View;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -36,6 +37,10 @@ public final class MainActivity extends Activity {
     private TextView logView;
     private ProgressBar progressBar;
     private Button startButton;
+    private EditText smpWindowInput;
+    private EditText smpPayloadInput;
+    private EditText smpRetriesInput;
+    private CheckBox smpWriteWithoutResponseInput;
     private Uri mainFirmware;
     private Uri radioFirmware;
     private BleFirmwareUpdater updater;
@@ -75,6 +80,20 @@ public final class MainActivity extends Activity {
         targetInput.setHint("BLE naam of MAC-adres");
         targetInput.setText(BleFirmwareUpdater.DEFAULT_TARGET);
         root.addView(targetInput, fullWidth());
+
+        smpWindowInput = numberInput("SMP window size", SmpCodec.DEFAULT_SMP_WINDOW_SIZE);
+        root.addView(smpWindowInput, fullWidth());
+
+        smpPayloadInput = numberInput("SMP payload size", SmpCodec.DEFAULT_SMP_PAYLOAD_SIZE);
+        root.addView(smpPayloadInput, fullWidth());
+
+        smpRetriesInput = numberInput("SMP retries", SmpCodec.DEFAULT_SMP_RETRY_COUNT);
+        root.addView(smpRetriesInput, fullWidth());
+
+        smpWriteWithoutResponseInput = new CheckBox(this);
+        smpWriteWithoutResponseInput.setText("SMP write without BLE response");
+        smpWriteWithoutResponseInput.setChecked(false);
+        root.addView(smpWriteWithoutResponseInput, fullWidth());
 
         Button mainButton = new Button(this);
         mainButton.setText("Kies main firmware");
@@ -120,6 +139,15 @@ public final class MainActivity extends Activity {
         return view;
     }
 
+    private EditText numberInput(String hint, int defaultValue) {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setHint(hint);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER);
+        input.setText(String.valueOf(defaultValue));
+        return input;
+    }
+
     private void pickFile(int requestCode) {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -135,6 +163,13 @@ public final class MainActivity extends Activity {
         }
         if (mainFirmware == null || radioFirmware == null) {
             appendLog("Kies eerst beide firmware files.");
+            return;
+        }
+        BleFirmwareUpdater.SmpOptions options;
+        try {
+            options = readSmpOptions();
+        } catch (IllegalArgumentException e) {
+            appendLog("ERROR: " + e.getMessage());
             return;
         }
         startButton.setEnabled(false);
@@ -156,13 +191,47 @@ public final class MainActivity extends Activity {
         String target = targetInput.getText().toString();
         executor.execute(() -> {
             try {
-                updater.run(target, mainFirmware, radioFirmware);
+                updater.run(target, mainFirmware, radioFirmware, options);
             } catch (Exception e) {
                 runOnUiThread(() -> appendLog("ERROR: " + e.getMessage()));
             } finally {
                 runOnUiThread(() -> startButton.setEnabled(true));
             }
         });
+    }
+
+    private BleFirmwareUpdater.SmpOptions readSmpOptions() {
+        BleFirmwareUpdater.SmpOptions options = new BleFirmwareUpdater.SmpOptions(
+                parsePositiveInt(smpWindowInput, "SMP window size"),
+                parsePositiveInt(smpPayloadInput, "SMP payload size"),
+                parseNonNegativeInt(smpRetriesInput, "SMP retries"),
+                smpWriteWithoutResponseInput.isChecked());
+        options.validate();
+        return options;
+    }
+
+    private int parsePositiveInt(EditText input, String label) {
+        int value = parseNonNegativeInt(input, label);
+        if (value <= 0) {
+            throw new IllegalArgumentException(label + " moet groter zijn dan 0");
+        }
+        return value;
+    }
+
+    private int parseNonNegativeInt(EditText input, String label) {
+        String raw = input.getText().toString().trim();
+        if (raw.isEmpty()) {
+            throw new IllegalArgumentException(label + " is verplicht");
+        }
+        try {
+            int value = Integer.parseInt(raw);
+            if (value < 0) {
+                throw new IllegalArgumentException(label + " mag niet negatief zijn");
+            }
+            return value;
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(label + " moet een getal zijn");
+        }
     }
 
     private void appendLog(String message) {

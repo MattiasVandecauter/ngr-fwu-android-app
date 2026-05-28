@@ -38,7 +38,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 final class BleFirmwareUpdater {
-    static final String DEFAULT_TARGET = "DKN_SDG_BLE_HCI_HOST";
+    static final String DEFAULT_TARGET = "BRC_70D6";
+    private static final int SMP_MIN_PAYLOAD_SIZE = 32;
     private static final UUID FWU_WRITE_UUID = UUID.fromString("3CE06519-BC5C-432C-AD3A-8801B224EE2C");
     private static final UUID CAPABILITY_READ_UUID = UUID.fromString("3CE06519-BC5C-432C-AD3A-8801B224EE2D");
     private static final UUID SMP_UUID = UUID.fromString("DA2E7828-FBCE-4E01-AE9E-261174997C48");
@@ -70,7 +71,8 @@ final class BleFirmwareUpdater {
         this.listener = listener;
     }
 
-    void run(String target, Uri mainFirmware, Uri radioFirmware) throws Exception {
+    void run(String target, Uri mainFirmware, Uri radioFirmware, SmpOptions smpOptions) throws Exception {
+        smpOptions.validate();
         byte[] main = readAll(mainFirmware);
         byte[] radio = readAll(radioFirmware);
 
@@ -86,9 +88,9 @@ final class BleFirmwareUpdater {
         writeJson(fwuWrite, "{\"fwuMode\":true}");
 
         waitForState(FWU_READY_FOR_INFO, 15);
-        uploadImage("main", main, slots[0]);
+        uploadImage("main", main, slots[0], smpOptions);
         waitForState(FWU_READY_FOR_INFO, 0);
-        uploadImage("radio", radio, slots[1] + 2);
+        uploadImage("radio", radio, slots[1] + 2, smpOptions);
         waitForState(FWU_UPLOAD_SUCCESS, 0);
         log("Firmware update completed");
     }
@@ -241,17 +243,21 @@ final class BleFirmwareUpdater {
         }
     }
 
-    private void uploadImage(String label, byte[] image, int slot) throws Exception {
+    private void uploadImage(String label, byte[] image, int slot, SmpOptions options) throws Exception {
         log("Uploading " + label + " image, " + image.length + " bytes ...");
+        log("SMP options: window=" + options.windowSize
+                + ", retries=" + options.retries
+                + ", payload=" + options.payloadSize
+                + ", writeWithoutResponse=" + options.writeWithoutResponse);
         int totalSent = 0;
         int sequence = 0;
         long started = System.currentTimeMillis();
         while (totalSent < image.length) {
             List<PendingRequest> pending = new ArrayList<>();
             int windowOffset = totalSent;
-            int windowSize = totalSent == 0 ? 1 : SmpCodec.SMP_WINDOW_SIZE;
+            int windowSize = totalSent == 0 ? 1 : options.windowSize;
             for (int i = 0; i < windowSize && windowOffset < image.length; i++) {
-                int chunkSize = Math.min(SmpCodec.SMP_PAYLOAD_SIZE, image.length - windowOffset);
+                int chunkSize = Math.min(options.payloadSize, image.length - windowOffset);
                 byte[] chunk = new byte[chunkSize];
                 System.arraycopy(image, windowOffset, chunk, 0, chunkSize);
                 byte[] request = SmpCodec.imageUploadRequest(sequence, slot, windowOffset, chunk, image.length);
@@ -259,19 +265,19 @@ final class BleFirmwareUpdater {
                 windowOffset += chunkSize;
                 sequence = (sequence + 1) & 0xFF;
             }
-            totalSent = sendSmpWindowWithRetry(pending);
+            totalSent = sendSmpWindowWithRetry(pending, options);
             listener.onProgress(label, totalSent, image.length);
         }
         long seconds = Math.max(1, (System.currentTimeMillis() - started) / 1000);
         log("Uploaded " + label + " image in " + seconds + "s");
     }
 
-    private int sendSmpWindowWithRetry(List<PendingRequest> pending) throws Exception {
-        for (int attempt = 0; attempt <= SmpCodec.SMP_RETRY_COUNT; attempt++) {
+    private int sendSmpWindowWithRetry(List<PendingRequest> pending, SmpOptions options) throws Exception {
+        for (int attempt = 0; attempt <= options.retries; attempt++) {
             drainSmpNotifications();
             try {
                 for (PendingRequest request : pending) {
-                    writeBytes(smp, request.packet, false);
+                    writeBytes(smp, request.packet, options.writeWithoutResponse);
                 }
                 Map<Integer, Integer> responses = collectSmpResponses(pending);
                 int nextOffset = pending.get(pending.size() - 1).offset + pending.get(pending.size() - 1).chunkSize;
@@ -288,10 +294,10 @@ final class BleFirmwareUpdater {
                 }
                 return nextOffset;
             } catch (Exception e) {
-                if (attempt == SmpCodec.SMP_RETRY_COUNT) {
+                if (attempt == options.retries) {
                     throw e;
                 }
-                log("SMP window retry " + (attempt + 1) + "/" + SmpCodec.SMP_RETRY_COUNT + ": " + e.getMessage());
+                log("SMP window retry " + (attempt + 1) + "/" + options.retries + ": " + e.getMessage());
             }
         }
         throw new IllegalStateException("Unreachable SMP retry state");
@@ -497,6 +503,43 @@ final class BleFirmwareUpdater {
         void onLog(String message);
 
         void onProgress(String label, int sent, int total);
+    }
+
+    static final class SmpOptions {
+        final int windowSize;
+        final int payloadSize;
+        final int retries;
+        final boolean writeWithoutResponse;
+
+        SmpOptions(int windowSize, int payloadSize, int retries, boolean writeWithoutResponse) {
+            this.windowSize = windowSize;
+            this.payloadSize = payloadSize;
+            this.retries = retries;
+            this.writeWithoutResponse = writeWithoutResponse;
+        }
+
+        void validate() {
+            if (windowSize <= 0 || windowSize > 255) {
+                throw new IllegalArgumentException("SMP window moet tussen 1 en 255 liggen");
+            }
+            if (payloadSize < SMP_MIN_PAYLOAD_SIZE || payloadSize > maxSmpPayloadSizeForMtu(BLE_MTU_SIZE)) {
+                throw new IllegalArgumentException("SMP payload moet tussen "
+                        + SMP_MIN_PAYLOAD_SIZE + " en " + maxSmpPayloadSizeForMtu(BLE_MTU_SIZE)
+                        + " liggen voor MTU " + BLE_MTU_SIZE);
+            }
+            if (retries < 0) {
+                throw new IllegalArgumentException("SMP retries moet 0 of hoger zijn");
+            }
+        }
+    }
+
+    static int maxSmpPayloadSizeForMtu(int mtu) {
+        int maxWriteValueSize = mtu - 3;
+        int payloadSize = 0;
+        while (SmpCodec.imageUploadRequest(0, 255, 0, new byte[payloadSize + 1], 0x7FFFFFFF).length <= maxWriteValueSize) {
+            payloadSize++;
+        }
+        return payloadSize;
     }
 
     private static final class PendingRequest {
