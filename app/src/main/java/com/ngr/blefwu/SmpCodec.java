@@ -141,19 +141,51 @@ final class SmpCodec {
         }
         if (major == 2) {
             int length = readLength(data, index, value);
+            if (length < 0) {
+                throw new IllegalArgumentException("Indefinite CBOR bytes are not supported");
+            }
             byte[] bytes = Arrays.copyOfRange(data, index.value, index.value + length);
             index.value += length;
             return bytes;
         }
         if (major == 3) {
             int length = readLength(data, index, value);
+            if (length < 0) {
+                throw new IllegalArgumentException("Indefinite CBOR text is not supported");
+            }
             String text = new String(data, index.value, length, StandardCharsets.UTF_8);
             index.value += length;
             return text;
         }
+        if (major == 4) {
+            int length = readLength(data, index, value);
+            Object[] values;
+            if (length < 0) {
+                java.util.ArrayList<Object> items = new java.util.ArrayList<>();
+                while ((data[index.value] & 0xFF) != 0xFF) {
+                    items.add(decodeValue(data, index));
+                }
+                index.value++;
+                return items;
+            }
+            values = new Object[length];
+            for (int i = 0; i < length; i++) {
+                values[i] = decodeValue(data, index);
+            }
+            return java.util.Arrays.asList(values);
+        }
         if (major == 5) {
             int length = readLength(data, index, value);
             Map<Object, Object> values = new LinkedHashMap<>();
+            if (length < 0) {
+                while ((data[index.value] & 0xFF) != 0xFF) {
+                    Object key = decodeValue(data, index);
+                    Object item = decodeValue(data, index);
+                    values.put(key, item);
+                }
+                index.value++;
+                return values;
+            }
             for (int i = 0; i < length; i++) {
                 Object key = decodeValue(data, index);
                 Object item = decodeValue(data, index);
@@ -196,6 +228,7 @@ final class SmpCodec {
             }
             return (int) parsed;
         }
+        if (value == 31) return -1;
         throw new IllegalArgumentException("Unsupported CBOR integer width");
     }
 
