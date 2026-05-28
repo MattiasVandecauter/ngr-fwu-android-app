@@ -25,6 +25,7 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -71,13 +72,13 @@ final class BleFirmwareUpdater {
         this.listener = listener;
     }
 
-    void run(String target, Uri mainFirmware, Uri radioFirmware, SmpOptions smpOptions) throws Exception {
+    void run(String target, Uri mainFirmware, Uri radioFirmware, SmpOptions smpOptions, boolean forceNewPairing) throws Exception {
         smpOptions.validate();
         byte[] main = readAll(mainFirmware);
         byte[] radio = readAll(radioFirmware);
 
         BluetoothDevice device = findDevice(target == null || target.trim().isEmpty() ? DEFAULT_TARGET : target.trim());
-        ensureBonded(device);
+        ensureBonded(device, forceNewPairing);
         log("Connecting to " + device.getAddress() + " ...");
         connect(device);
         requestMtu();
@@ -149,12 +150,36 @@ final class BleFirmwareUpdater {
         }
     }
 
-    private void ensureBonded(BluetoothDevice device) throws Exception {
-        if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
+    private void ensureBonded(BluetoothDevice device, boolean forceNewPairing) throws Exception {
+        if (device.getBondState() == BluetoothDevice.BOND_BONDED && !forceNewPairing) {
             log("Device already bonded");
             return;
         }
+        if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
+            log("Removing existing Android bond before pairing ...");
+            removeBond(device);
+            waitForBondState(device, BluetoothDevice.BOND_NONE, 20);
+        }
         log("Pairing with " + device.getAddress() + " ...");
+        if (!device.createBond()) {
+            throw new IllegalStateException("Pairing could not be started");
+        }
+        waitForBondState(device, BluetoothDevice.BOND_BONDED, 60);
+        log("Pairing completed");
+    }
+
+    private void removeBond(BluetoothDevice device) throws Exception {
+        Method removeBond = device.getClass().getMethod("removeBond");
+        boolean started = (Boolean) removeBond.invoke(device);
+        if (!started) {
+            throw new IllegalStateException("Android bond removal could not be started");
+        }
+    }
+
+    private void waitForBondState(BluetoothDevice device, int expectedState, int timeoutSeconds) throws Exception {
+        if (device.getBondState() == expectedState) {
+            return;
+        }
         CountDownLatch bondLatch = new CountDownLatch(1);
         final int[] bondState = new int[]{device.getBondState()};
         BroadcastReceiver receiver = new BroadcastReceiver() {
@@ -168,22 +193,27 @@ final class BleFirmwareUpdater {
                     return;
                 }
                 bondState[0] = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR);
-                if (bondState[0] == BluetoothDevice.BOND_BONDED || bondState[0] == BluetoothDevice.BOND_NONE) {
+                if (bondState[0] == expectedState || bondState[0] == BluetoothDevice.BOND_NONE) {
                     bondLatch.countDown();
                 }
             }
         };
-        context.registerReceiver(receiver, new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED));
+        registerBondReceiver(receiver);
         try {
-            if (!device.createBond()) {
-                throw new IllegalStateException("Pairing could not be started");
+            if (!bondLatch.await(timeoutSeconds, TimeUnit.SECONDS) || bondState[0] != expectedState) {
+                throw new IllegalStateException("Unexpected bond state=" + bondState[0] + ", expected=" + expectedState);
             }
-            if (!bondLatch.await(60, TimeUnit.SECONDS) || bondState[0] != BluetoothDevice.BOND_BONDED) {
-                throw new IllegalStateException("Pairing failed, state=" + bondState[0]);
-            }
-            log("Pairing completed");
         } finally {
             context.unregisterReceiver(receiver);
+        }
+    }
+
+    private void registerBondReceiver(BroadcastReceiver receiver) {
+        IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
+        if (Build.VERSION.SDK_INT >= 33) {
+            context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
+        } else {
+            context.registerReceiver(receiver, filter);
         }
     }
 
@@ -198,6 +228,28 @@ final class BleFirmwareUpdater {
     }
 
     private void discoverCharacteristics() throws Exception {
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            resetCharacteristics();
+            log("Discovering GATT services, attempt " + attempt + "/3 ...");
+            discoverServicesOnce();
+            log("Discovered " + gatt.getServices().size() + " GATT service(s)");
+            findRequiredCharacteristics();
+            if (fwuWrite != null && capabilityRead != null && smp != null) {
+                enableSmpNotifications();
+                return;
+            }
+            logMissingCharacteristics();
+            logDiscoveredGatt();
+            if (attempt < 3) {
+                log("Refreshing Android GATT cache before retry ...");
+                refreshGattCache();
+                Thread.sleep(1000);
+            }
+        }
+        throw new IllegalStateException("Required FWU characteristics were not found");
+    }
+
+    private void discoverServicesOnce() throws Exception {
         discoverLatch = new CountDownLatch(1);
         if (!gatt.discoverServices()) {
             throw new IllegalStateException("Service discovery could not be started");
@@ -205,15 +257,52 @@ final class BleFirmwareUpdater {
         if (!discoverLatch.await(20, TimeUnit.SECONDS) || lastStatus != BluetoothGatt.GATT_SUCCESS) {
             throw new IllegalStateException("Service discovery failed, status=" + lastStatus);
         }
+    }
+
+    private void resetCharacteristics() {
+        fwuWrite = null;
+        capabilityRead = null;
+        smp = null;
+    }
+
+    private void findRequiredCharacteristics() {
         for (BluetoothGattService service : gatt.getServices()) {
             if (fwuWrite == null) fwuWrite = service.getCharacteristic(FWU_WRITE_UUID);
             if (capabilityRead == null) capabilityRead = service.getCharacteristic(CAPABILITY_READ_UUID);
             if (smp == null) smp = service.getCharacteristic(SMP_UUID);
         }
-        if (fwuWrite == null || capabilityRead == null || smp == null) {
-            throw new IllegalStateException("Required FWU characteristics were not found");
+    }
+
+    private void logMissingCharacteristics() {
+        if (fwuWrite == null) {
+            log("Missing FWU write characteristic: " + FWU_WRITE_UUID);
         }
-        enableSmpNotifications();
+        if (capabilityRead == null) {
+            log("Missing capability read characteristic: " + CAPABILITY_READ_UUID);
+        }
+        if (smp == null) {
+            log("Missing SMP characteristic: " + SMP_UUID);
+        }
+    }
+
+    private void logDiscoveredGatt() {
+        for (BluetoothGattService service : gatt.getServices()) {
+            log("Service " + service.getUuid());
+            for (BluetoothGattCharacteristic characteristic : service.getCharacteristics()) {
+                log("  Characteristic " + characteristic.getUuid()
+                        + " props=0x" + Integer.toHexString(characteristic.getProperties()));
+            }
+        }
+    }
+
+    private void refreshGattCache() {
+        try {
+            Method refresh = gatt.getClass().getMethod("refresh");
+            boolean refreshed = (Boolean) refresh.invoke(gatt);
+            log("GATT cache refresh result: " + refreshed);
+        } catch (Exception e) {
+            log("GATT cache refresh unavailable: " + e.getMessage());
+        }
     }
 
     private int[] getSlots() throws Exception {

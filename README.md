@@ -6,7 +6,8 @@ The app:
 
 - scans by BLE name `BRC_70D6` by default, or connects to another typed BLE
   name/MAC address
-- pairs/bonds through Android
+- pairs/bonds through Android, with an app option to remove an existing Android
+  bond first and force a fresh pairing request
 - requests MTU `498`
 - discovers the same FWU write, capability read, and SMP characteristics
 - writes `{"fwuMode":true}`

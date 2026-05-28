@@ -41,6 +41,7 @@ public final class MainActivity extends Activity {
     private EditText smpPayloadInput;
     private EditText smpRetriesInput;
     private CheckBox smpWriteWithoutResponseInput;
+    private CheckBox forceNewPairingInput;
     private Uri mainFirmware;
     private Uri radioFirmware;
     private BleFirmwareUpdater updater;
@@ -94,6 +95,11 @@ public final class MainActivity extends Activity {
         smpWriteWithoutResponseInput.setText("SMP write without BLE response");
         smpWriteWithoutResponseInput.setChecked(false);
         root.addView(smpWriteWithoutResponseInput, fullWidth());
+
+        forceNewPairingInput = new CheckBox(this);
+        forceNewPairingInput.setText("Nieuwe pairing afdwingen");
+        forceNewPairingInput.setChecked(true);
+        root.addView(forceNewPairingInput, fullWidth());
 
         Button mainButton = new Button(this);
         mainButton.setText("Kies main firmware");
@@ -189,9 +195,10 @@ public final class MainActivity extends Activity {
             }
         });
         String target = targetInput.getText().toString();
+        boolean forceNewPairing = forceNewPairingInput.isChecked();
         executor.execute(() -> {
             try {
-                updater.run(target, mainFirmware, radioFirmware, options);
+                updater.run(target, mainFirmware, radioFirmware, options, forceNewPairing);
             } catch (Exception e) {
                 runOnUiThread(() -> appendLog("ERROR: " + e.getMessage()));
             } finally {
