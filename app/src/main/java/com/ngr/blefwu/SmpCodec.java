@@ -58,7 +58,7 @@ final class SmpCodec {
         int group = header.getShort() & 0xFFFF;
         int sequence = header.get() & 0xFF;
         int command = header.get() & 0xFF;
-        if (op != SMP_OP_WRITE_RSP || group != SMP_GROUP_IMAGE || command != SMP_ID_IMAGE_UPLOAD) {
+        if ((op != SMP_OP_WRITE_RSP && op != SMP_OP_WRITE) || group != SMP_GROUP_IMAGE || command != SMP_ID_IMAGE_UPLOAD) {
             throw new SmpResponseException("Unexpected SMP response header");
         }
         if (length == 0) {
