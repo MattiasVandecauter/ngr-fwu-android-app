@@ -382,6 +382,8 @@ final class BleFirmwareUpdater {
                     }
                 }
                 return nextOffset;
+            } catch (SmpCodec.SmpResponseException e) {
+                throw e;
             } catch (Exception e) {
                 if (attempt == options.retries) {
                     throw e;
@@ -401,12 +403,21 @@ final class BleFirmwareUpdater {
         long deadline = System.currentTimeMillis() + 30000;
         while (responses.size() < pending.size()) {
             byte[] packet = pollSmpNotification(deadline - System.currentTimeMillis());
+            log("SMP response raw: " + bytesToHex(packet));
             SmpCodec.SmpResponse response = SmpCodec.parseImageUploadResponse(packet);
             if (pendingBySequence.containsKey(response.sequence)) {
                 responses.put(response.sequence, response.nextOffset);
             }
         }
         return responses;
+    }
+
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder hex = new StringBuilder(bytes.length * 2);
+        for (byte value : bytes) {
+            hex.append(String.format(Locale.US, "%02x", value & 0xFF));
+        }
+        return hex.toString();
     }
 
     private byte[] pollSmpNotification(long timeoutMillis) throws Exception {

@@ -47,9 +47,9 @@ final class SmpCodec {
         return header.array();
     }
 
-    static SmpResponse parseImageUploadResponse(byte[] packet) {
+    static SmpResponse parseImageUploadResponse(byte[] packet) throws SmpResponseException {
         if (packet.length < 8) {
-            throw new IllegalArgumentException("SMP response is shorter than the 8-byte header");
+            throw new SmpResponseException("SMP response is shorter than the 8-byte header");
         }
         ByteBuffer header = ByteBuffer.wrap(packet).order(ByteOrder.BIG_ENDIAN);
         int op = header.get() & 0xFF;
@@ -59,26 +59,31 @@ final class SmpCodec {
         int sequence = header.get() & 0xFF;
         int command = header.get() & 0xFF;
         if (op != SMP_OP_WRITE_RSP || group != SMP_GROUP_IMAGE || command != SMP_ID_IMAGE_UPLOAD) {
-            throw new IllegalArgumentException("Unexpected SMP response header");
+            throw new SmpResponseException("Unexpected SMP response header");
         }
         if (length == 0) {
             return new SmpResponse(sequence, -1);
         }
 
-        Object decoded = decodeValue(Arrays.copyOfRange(packet, 8, 8 + length), new Index());
+        Object decoded;
+        try {
+            decoded = decodeValue(Arrays.copyOfRange(packet, 8, 8 + length), new Index());
+        } catch (RuntimeException e) {
+            throw new SmpResponseException("Could not decode SMP CBOR response: " + e.getMessage(), e);
+        }
         if (!(decoded instanceof Map)) {
-            throw new IllegalArgumentException("Expected CBOR map in SMP response");
+            throw new SmpResponseException("Expected CBOR map in SMP response");
         }
         Map<?, ?> values = (Map<?, ?>) decoded;
         Object err = values.get("err");
         if (err instanceof Map) {
             Map<?, ?> error = (Map<?, ?>) err;
-            throw new IllegalArgumentException(
+            throw new SmpResponseException(
                     "SMP upload failed with group=" + error.get("group") + " rc=" + error.get("rc"));
         }
         Object rc = values.get("rc");
         if (rc instanceof Number && ((Number) rc).intValue() != 0) {
-            throw new IllegalArgumentException("SMP upload failed with rc=" + rc);
+            throw new SmpResponseException("SMP upload failed with rc=" + rc);
         }
         Object off = values.get("off");
         return new SmpResponse(sequence, off instanceof Number ? ((Number) off).intValue() : -1);
@@ -180,6 +185,17 @@ final class SmpCodec {
             index.value += 4;
             return parsed;
         }
+        if (value == 27) {
+            long parsed = 0;
+            for (int i = 0; i < 8; i++) {
+                parsed = (parsed << 8) | (data[index.value + i] & 0xFFL);
+            }
+            index.value += 8;
+            if (parsed > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("CBOR integer is too large for this SMP field");
+            }
+            return (int) parsed;
+        }
         throw new IllegalArgumentException("Unsupported CBOR integer width");
     }
 
@@ -190,6 +206,16 @@ final class SmpCodec {
         SmpResponse(int sequence, int nextOffset) {
             this.sequence = sequence;
             this.nextOffset = nextOffset;
+        }
+    }
+
+    static final class SmpResponseException extends Exception {
+        SmpResponseException(String message) {
+            super(message);
+        }
+
+        SmpResponseException(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 
