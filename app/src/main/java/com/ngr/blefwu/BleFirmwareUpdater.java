@@ -403,8 +403,13 @@ final class BleFirmwareUpdater {
         long deadline = System.currentTimeMillis() + 30000;
         while (responses.size() < pending.size()) {
             byte[] packet = pollSmpNotification(deadline - System.currentTimeMillis());
-            log("SMP response raw: " + bytesToHex(packet));
-            SmpCodec.SmpResponse response = SmpCodec.parseImageUploadResponse(packet);
+            SmpCodec.SmpResponse response;
+            try {
+                response = SmpCodec.parseImageUploadResponse(packet);
+            } catch (SmpCodec.SmpResponseException e) {
+                log("SMP response raw: " + bytesToHex(packet));
+                throw e;
+            }
             if (pendingBySequence.containsKey(response.sequence)) {
                 responses.put(response.sequence, response.nextOffset);
             }

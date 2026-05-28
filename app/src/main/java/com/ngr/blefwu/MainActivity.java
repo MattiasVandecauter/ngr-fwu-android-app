@@ -20,8 +20,10 @@ import android.widget.TextView;
 import java.text.DateFormat;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -29,8 +31,10 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_PERMISSIONS = 10;
     private static final int REQUEST_MAIN_FW = 20;
     private static final int REQUEST_RADIO_FW = 21;
+    private static final int PROGRESS_LOG_STEP_BYTES = 100_000;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final Map<String, Integer> nextProgressLogByLabel = new HashMap<>();
     private EditText targetInput;
     private TextView mainFileLabel;
     private TextView radioFileLabel;
@@ -180,6 +184,7 @@ public final class MainActivity extends Activity {
         }
         startButton.setEnabled(false);
         progressBar.setProgress(0);
+        nextProgressLogByLabel.clear();
         updater = new BleFirmwareUpdater(this, new BleFirmwareUpdater.Listener() {
             @Override
             public void onLog(String message) {
@@ -190,7 +195,7 @@ public final class MainActivity extends Activity {
             public void onProgress(String label, int sent, int total) {
                 runOnUiThread(() -> {
                     progressBar.setProgress(total == 0 ? 0 : (int) ((sent * 1000L) / total));
-                    appendLog(String.format(Locale.US, "%s: %d/%d bytes", label, sent, total));
+                    appendProgressLog(label, sent, total);
                 });
             }
         });
@@ -205,6 +210,20 @@ public final class MainActivity extends Activity {
                 runOnUiThread(() -> startButton.setEnabled(true));
             }
         });
+    }
+
+    private void appendProgressLog(String label, int sent, int total) {
+        int nextLog = nextProgressLogByLabel.containsKey(label)
+                ? nextProgressLogByLabel.get(label)
+                : PROGRESS_LOG_STEP_BYTES;
+        if (sent < nextLog && sent < total) {
+            return;
+        }
+        appendLog(String.format(Locale.US, "%s: %d/%d bytes", label, sent, total));
+        while (nextLog <= sent) {
+            nextLog += PROGRESS_LOG_STEP_BYTES;
+        }
+        nextProgressLogByLabel.put(label, nextLog);
     }
 
     private BleFirmwareUpdater.SmpOptions readSmpOptions() {
