@@ -178,14 +178,40 @@ final class BleFirmwareUpdater {
             log("Pairing completed");
             return;
         }
-        log("Calling createBond() ...");
-        boolean started = device.createBond();
-        log("createBond() returned: " + started);
-        if (!started) {
-            throw new IllegalStateException("Pairing could not be started");
+        attemptBond(device);
+    }
+
+    private static final int BOND_ATTEMPTS = 3;
+    private static final int BOND_RETRY_DELAY_MS = 2000;
+
+    private void attemptBond(BluetoothDevice device) throws Exception {
+        Exception lastException = null;
+        for (int attempt = 1; attempt <= BOND_ATTEMPTS; attempt++) {
+            try {
+                log("Calling createBond(), attempt " + attempt + "/" + BOND_ATTEMPTS + " ...");
+                boolean started = device.createBond();
+                log("createBond() returned: " + started);
+                if (!started) {
+                    throw new IllegalStateException("createBond() returned false");
+                }
+                waitForBondState(device, BluetoothDevice.BOND_BONDED, 60);
+                log("Pairing completed");
+                return;
+            } catch (Exception e) {
+                lastException = e;
+                log("Pairing attempt " + attempt + "/" + BOND_ATTEMPTS
+                        + " failed: " + e.getMessage());
+                if (attempt < BOND_ATTEMPTS) {
+                    log("Waiting " + BOND_RETRY_DELAY_MS + "ms before retry ...");
+                    Thread.sleep(BOND_RETRY_DELAY_MS);
+                    if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
+                        log("Pairing completed (detected on retry check)");
+                        return;
+                    }
+                }
+            }
         }
-        waitForBondState(device, BluetoothDevice.BOND_BONDED, 60);
-        log("Pairing completed");
+        throw lastException;
     }
 
     private void removeBond(BluetoothDevice device) throws Exception {
