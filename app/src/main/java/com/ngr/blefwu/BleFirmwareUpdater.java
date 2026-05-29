@@ -150,7 +150,18 @@ final class BleFirmwareUpdater {
         }
     }
 
+    private static String bondStateName(int state) {
+        switch (state) {
+            case BluetoothDevice.BOND_NONE:    return "NONE";
+            case BluetoothDevice.BOND_BONDING: return "BONDING";
+            case BluetoothDevice.BOND_BONDED:  return "BONDED";
+            default:                           return "UNKNOWN(" + state + ")";
+        }
+    }
+
     private void ensureBonded(BluetoothDevice device, boolean forceNewPairing) throws Exception {
+        log("Bond state: " + bondStateName(device.getBondState())
+                + ", forceNewPairing=" + forceNewPairing);
         if (device.getBondState() == BluetoothDevice.BOND_BONDED && !forceNewPairing) {
             log("Device already bonded");
             return;
@@ -159,9 +170,18 @@ final class BleFirmwareUpdater {
             log("Removing existing Android bond before pairing ...");
             removeBond(device);
             waitForBondState(device, BluetoothDevice.BOND_NONE, 20);
+            log("Bond removed");
         }
-        log("Pairing with " + device.getAddress() + " ...");
-        if (!device.createBond()) {
+        if (device.getBondState() == BluetoothDevice.BOND_BONDING) {
+            log("Bond already in progress, waiting ...");
+            waitForBondState(device, BluetoothDevice.BOND_BONDED, 60);
+            log("Pairing completed");
+            return;
+        }
+        log("Calling createBond() ...");
+        boolean started = device.createBond();
+        log("createBond() returned: " + started);
+        if (!started) {
             throw new IllegalStateException("Pairing could not be started");
         }
         waitForBondState(device, BluetoothDevice.BOND_BONDED, 60);
@@ -192,7 +212,10 @@ final class BleFirmwareUpdater {
                 if (changed == null || !device.getAddress().equals(changed.getAddress())) {
                     return;
                 }
-                bondState[0] = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR);
+                int prev = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, BluetoothDevice.ERROR);
+                int next = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR);
+                log("Bond state change: " + bondStateName(prev) + " -> " + bondStateName(next));
+                bondState[0] = next;
                 if (bondState[0] == expectedState || bondState[0] == BluetoothDevice.BOND_NONE) {
                     bondLatch.countDown();
                 }
@@ -200,8 +223,16 @@ final class BleFirmwareUpdater {
         };
         registerBondReceiver(receiver);
         try {
-            if (!bondLatch.await(timeoutSeconds, TimeUnit.SECONDS) || bondState[0] != expectedState) {
-                throw new IllegalStateException("Unexpected bond state=" + bondState[0] + ", expected=" + expectedState);
+            boolean reached = bondLatch.await(timeoutSeconds, TimeUnit.SECONDS);
+            if (!reached) {
+                throw new IllegalStateException(
+                        "Timed out waiting for bond state " + bondStateName(expectedState)
+                        + " (stuck at " + bondStateName(bondState[0]) + ")");
+            }
+            if (bondState[0] != expectedState) {
+                throw new IllegalStateException(
+                        "Bond state " + bondStateName(bondState[0])
+                        + ", expected " + bondStateName(expectedState));
             }
         } finally {
             context.unregisterReceiver(receiver);

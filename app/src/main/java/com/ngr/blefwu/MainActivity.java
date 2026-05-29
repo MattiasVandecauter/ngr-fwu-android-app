@@ -102,7 +102,7 @@ public final class MainActivity extends Activity {
 
         forceNewPairingInput = new CheckBox(this);
         forceNewPairingInput.setText("Nieuwe pairing afdwingen");
-        forceNewPairingInput.setChecked(true);
+        forceNewPairingInput.setChecked(false);
         root.addView(forceNewPairingInput, fullWidth());
 
         Button mainButton = new Button(this);
